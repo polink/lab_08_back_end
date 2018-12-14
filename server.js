@@ -4,6 +4,7 @@
 const express = require('express');
 const cors = require('cors');
 const superagent = require('superagent');
+const pg = require('pg');
 
 // Load env vars;
 require('dotenv').config();
@@ -13,6 +14,11 @@ console.log(process.env);
 // App
 const app = express();
 app.use(cors());
+
+//postgres
+const client = new pg.Client(process.env.DATABASE_URL);
+client.connect();
+client.on('error', err => console.log(err));
 
 // Routes
 app.get('/location', getLocation);
