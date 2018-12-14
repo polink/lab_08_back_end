@@ -20,6 +20,65 @@ const client = new pg.Client(process.env.DATABASE_URL);
 client.connect();
 client.on('error', err => console.log(err));
 
+app.get('/location', getLocation);
+
+function getLocation(req, res) {
+  let lookupHandler = {
+    cacheHit: (data) => {
+      console.log('Location retreived from database')
+      res.status(200).send(data.rows[0]);
+    },
+    cacheMiss: (query) => {
+      return fetchLocation(query)
+        .then(result => {
+          res.send(result);
+      }),
+    }
+  }
+  }
+
+  lookupLocation(req.query.data, lookupHandler);
+
+}
+
+function lookupLocation(query, handler) {
+  const SQL = 'SELECT * FROM locations WHERE search_query=$1';
+  const values = [query];
+  return client.query(SQL, values)
+    .then(data => { // then if we have it, send it back;
+      if (data.rowCount) {
+        handler.cacheHit(data);
+      } else {
+        handler.cacheMiss(query);
+      }
+    })
+}
+
+function fetchLocation(query) {
+  // otherwise, get it from google
+
+  const URL = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`
+
+  return superagent.get(URL)
+    .then(result => {
+      console.log('Location retreived from google')
+      // then normalize it
+
+      let location = new Location(result.body.results[0]);
+      let SQL = `INSERT INTO locations 
+            (search_query, formatted_query, latitude, longitude)
+            VALUES($1, $2, $3, $4)`;
+
+      // store it in our db
+      return client.query(SQL, [query, location.formatted_query, location.latitude, location.longitude])
+        .then(() => {
+          return location;
+        })
+    })
+
+}
+
+
 // Routes
 app.get('/location', getLocation);
 app.get('/weather', getWeather);
@@ -27,14 +86,14 @@ app.get('/yelp', getYelp);
 app.get('/movies', getMovie);
 
 // Handlers
-function getLocation (req, res) {
+function getLocation(req, res) {
   return searchToLatLong(req.query.data)
     .then(locationData => {
       res.send(locationData);
     });
 }
 
-function getWeather (req, res) {
+function getWeather(req, res) {
   return searchForWeather(req.query.data)
     .then(weatherData => {
       res.send(weatherData);
@@ -48,7 +107,7 @@ function getYelp(req, res) {
     });
 }
 
-function getMovie(req,res) {
+function getMovie(req, res) {
   return searchMovie(req.query.data)
     .then(movieData => {
       res.send(movieData);
@@ -90,7 +149,7 @@ function Location(location, query) {
   this.longitude = location.geometry.location.lng;
 }
 
-function Daily (day) {
+function Daily(day) {
   this.forecast = day.summary
   this.time = new Date(day.time * 1000).toDateString()
 }
@@ -246,12 +305,13 @@ function searchMovie(query) {
 //     })
 // }
 // Bad path
-app.get('/*', function(req, res) {
+app.get('/*', function (req, res) {
   res.status(404).send('You are in the wrong place');
 });
 
 
 // Listen
 app.listen(PORT, () => {
-  console.log(`Listening on port: ${PORT}`)}
+  console.log(`Listening on port: ${PORT}`)
+}
 );
