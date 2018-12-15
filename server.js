@@ -28,10 +28,21 @@ app.get('/movies', getMovie);
 
 // Handlers
 function getLocation (req, res) {
-  return searchToLatLong(req.query.data)
-    .then(locationData => {
-      res.send(locationData);
-    });
+  let lookupHandler = {
+    cacheHit : (data) => {
+      console.log('Location retreived from database');
+      res.status(200).send(data.rows[0]);
+    },
+    cacheMiss : (query) => {
+      return fetchLocation(query)
+        .then(result => {
+          res.send(result);
+        });
+    }
+  };
+
+  lookupLocation(req.query.data, lookupHandler);
+
 }
 
 function getWeather (req, res) {
@@ -42,10 +53,19 @@ function getWeather (req, res) {
 }
 
 function getYelp(req, res) {
-  return searchYelp(req.query.data)
-    .then(yelpData => {
-      res.send(yelpData);
-    });
+  let lookupHandler = {
+    cacheHit : (data) => {
+      console.log('Yelp retrieved from Database');
+      res.status(200).send(data.rows[0]);// not sure how it works
+    },
+    cacheMiss : (query) => {
+      return fetchYelp(query)
+        .then(result => {
+          res.send(result);
+        });
+    }
+  };
+  lookupYelp(req.query.data, lookupHandler);
 }
 
 function getMovie(req,res) {
@@ -60,28 +80,6 @@ function handleError(res) {
   res.status(500).send('Sorry something went wrong!');
 }
 
-// // Get location data
-// function searchToLatLong (query) => {
-//   const locationData = searchToLatLong(req.query.data);
-//   if (!locationData) {
-//     handleError(res);
-//   }
-//   res.send(locationData);
-// })
-
-// //get functions
-// function getLocation(query) {
-//   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`;
-//   return superagent.get(url)
-//     .then(result => {
-//       const location = new Location(query,result);
-//       return location;
-//     })
-//     .catch(err => console.error(err));
-// }
-
-
-
 // Constructor functions
 function Location(location, query) {
   this.search_query = query;
@@ -91,8 +89,8 @@ function Location(location, query) {
 }
 
 function Daily (day) {
-  this.forecast = day.summary
-  this.time = new Date(day.time * 1000).toDateString()
+  this.forecast = day.summary;
+  this.time = new Date(day.time * 1000).toDateString();
 }
 
 function Yelp(business) {
@@ -112,15 +110,52 @@ function Movies(show) {
   this.released_on = show.release_date;
 }
 
+//SQL
+
+function lookupLocation(query, handler){
+  const SQL = 'SELECT * FROM locations WHERE search_query=$1';
+  const values = [query];
+  return client.query(SQL, values)
+    .then(data => { // then if we have it, send it back;
+      if (data.rowCount) {
+        handler.cacheHit(data);
+      } else {
+        handler.cacheMiss(query);
+      }
+    });
+}
+function lookupYelp(query, handler) {
+  const SQL = 'SELECT * FROM businesses WHERE search_query=$1';
+  const values = [query];
+  return client.query(SQL, values)
+    .then(data => {
+      if (data.rowCount) {
+        handler.cacheHit(data);
+      } else {
+        handler.cacheMiss(query);
+      }
+    });
+}
+
 // Search Functions
-function searchToLatLong(query) {
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`;
-  return superagent.get(url)
-    .then(geoData => {
-      const location = new Location(geoData.body.results[0], query);
-      return location;
-    })
-    .catch(err => console.error(err));
+function fetchLocation(query){
+  // otherwise, get it from google
+  const URL = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`;
+  return superagent.get(URL)
+    .then(result => {
+      console.log('Location retreived from google');
+      // then normalize it
+      let location = new Location(result.body.results[0]);
+      let SQL = `INSERT INTO locations 
+            (search_query, formatted_query, latitude, longitude)
+            VALUES($1, $2, $3, $4)`;
+      // store it in our db
+      return client.query(SQL, [query, location.formatted_query, location.latitude, location.longitude])
+        .then(() => {
+          return location;
+        });
+    });
+
 }
 
 function searchForWeather(query) {
@@ -132,12 +167,22 @@ function searchForWeather(query) {
     .catch(err => console.error(err));
 }
 
-function searchYelp(query) {
+function fetchYelp(query) {
   const url = `https://api.yelp.com/v3/businesses/search?term=restaurants&latitude=${query.latitude}&longitude=${query.longitude}`;
   return superagent.get(url)
     .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
     .then(yelpData => {
-      return yelpData.body.businesses.map(business => new Yelp(business));
+      console.log('Yelp retreived from google');
+      let yelp = yelpData.body.businesses.map(business => new Yelp(business));
+
+      let SQL = `INSERT INTO businesses
+      (name, image_url, price, rating, url)
+      VALUES($1, $2, $3, $4, $5)`;
+
+      return client.query(SQL, [yelp.name, yelp.image_url, yelp.price, yelp.rating, yelp.url])
+        .then(() => {
+          return yelp;
+        });
     })
     .catch(err => console.error(err));
 }
@@ -151,100 +196,6 @@ function searchMovie(query) {
     .catch(err => console.error(err));
 }
 
-/// // Get weather data
-// app.get('/weather', (req, res) => {
-//   const weatherData = getWeather(req.query.data);
-//   if (!weatherData) {
-//     handleError(res);
-//   }
-//   res.send(weatherData);
-// });
-
-// function getWeather(query) {
-//   const weatherJson = require('./data/darksky.json');
-//   const weather = new Weather(weatherJson);
-//   return weather;
-// }
-
-// function Weather(weatherJson) {
-//   return weatherJson.daily.data.map(day => {
-//     return {
-//       forecast: day.summary,
-//       time: new Date(day.time * 1000).toDateString()
-//     }
-//   });
-// }
-
-//Yelp
-// app.get('/yelp', (req){
-// const yelpData =
-// })
-
-// function Yelp(business) {
-//   this.name = business.name;
-//   this.image_url = business.image_url;
-//   this.price = business.price;
-//   this.rating = business.rating;
-//   this.url = business.url;
-// }
-// function getYelp(request, response) {
-
-//   const url = `https://api.yelp.com/v3/businesses/search?location=${request.query.data.search_query}`;
-
-//   superagent.get(url)
-//     .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
-//     .then(result => {
-//       const yelpSummaries = result.body.businesses.map(business => {
-//         const review = new Yelp(business);
-//         review.save(request.query.data.id);
-//         return review;
-//       });
-
-//       response.send(yelpSummaries);
-//     })
-//     .catch(error => handleError(error, response));
-// }
-// function getYelp(request) {
-//   const url = `https://api.yelp.com/v3/businesses/search?location=${request.query.data.search_query}`;
-//   superagent.get(url)
-//     .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
-//     .then(yelpData => {
-//       const yelp = yelpData.businesses.map(yelpArray => {
-//         const yelpInfo = new Yelp(yelpArray)
-//         return yelpInfo
-//       })
-//     })
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// function searchForBusiness (query) {
-//   const url = `https://api.yelp.com/v3/businesses/search?location=${query}`
-
-//   superagent.get(url)
-//     .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
-//     .then(yelpData => {
-//       const yelp = new Yelp(yelpData);
-//       yelp.map()
-//       return yelp;
-//     })
-// }
 // Bad path
 app.get('/*', function(req, res) {
   res.status(404).send('You are in the wrong place');
@@ -253,5 +204,5 @@ app.get('/*', function(req, res) {
 
 // Listen
 app.listen(PORT, () => {
-  console.log(`Listening on port: ${PORT}`)}
+  console.log(`Listening on port: ${PORT}`);}
 );
